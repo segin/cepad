@@ -1,0 +1,47 @@
+#include "resource.h"
+
+IDI_APP ICON "notepad.ico"
+
+IDR_MAIN_MENU MENU DISCARDABLE
+BEGIN
+    POPUP "&File"
+    BEGIN
+        MENUITEM "&New\tCtrl+N", ID_FILE_NEW
+        MENUITEM "&Open...\tCtrl+O", ID_FILE_OPEN
+        MENUITEM "&Save\tCtrl+S", ID_FILE_SAVE
+        MENUITEM "Save &As...\tCtrl+Shift+S", ID_FILE_SAVE_AS
+        MENUITEM SEPARATOR
+        MENUITEM "&Close Tab\tCtrl+W", ID_FILE_CLOSE_TAB
+        MENUITEM SEPARATOR
+        MENUITEM "E&xit", ID_FILE_EXIT
+    END
+    POPUP "&Edit"
+    BEGIN
+        MENUITEM "&Undo\tCtrl+Z", ID_EDIT_UNDO
+        MENUITEM SEPARATOR
+        MENUITEM "Cu&t\tCtrl+X", ID_EDIT_CUT
+        MENUITEM "&Copy\tCtrl+C", ID_EDIT_COPY
+        MENUITEM "&Paste\tCtrl+V", ID_EDIT_PASTE
+        MENUITEM "De&lete\tDel", ID_EDIT_DELETE
+        MENUITEM SEPARATOR
+        MENUITEM "Select &All\tCtrl+A", ID_EDIT_SELECT_ALL
+        MENUITEM "Time/&Date\tF5", ID_EDIT_TIME_DATE
+        MENUITEM SEPARATOR
+        MENUITEM "&Word Wrap", ID_EDIT_WORD_WRAP
+        MENUITEM "&Font...", ID_EDIT_FONT
+    END
+    POPUP "&Search"
+    BEGIN
+        MENUITEM "&Find...\tCtrl+F", ID_SEARCH_FIND
+        MENUITEM "Find &Next\tF3", ID_SEARCH_FIND_NEXT
+    END
+    POPUP "&Tabs"
+    BEGIN
+        MENUITEM "&Next Tab\tCtrl+Tab", ID_TABS_NEXT
+        MENUITEM "&Previous Tab\tCtrl+Shift+Tab", ID_TABS_PREVIOUS
+    END
+    POPUP "&Help"
+    BEGIN
+        MENUITEM "&About CE Pad...", ID_HELP_ABOUT
+    END
+END

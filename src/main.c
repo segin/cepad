@@ -184,6 +184,7 @@ static void App_Layout(APP_STATE* app) {
     int tab_top;
     int tab_width;
     int tab_height;
+    int command_height;
 
     if (!app || !app->tab) {
         return;
@@ -195,8 +196,6 @@ static void App_Layout(APP_STATE* app) {
     margin = 4;
 
     if (app->command_bar) {
-        int command_height;
-
         command_height = CommandBar_Height(app->command_bar);
         MoveWindow(app->command_bar, 0, 0, width, command_height, TRUE);
         client.top += command_height;
@@ -964,10 +963,10 @@ static HACCEL App_CreateAccelerators(void) {
 }
 
 static void App_CreateControls(APP_STATE* app) {
+    app->menu = LoadMenu(app->instance, MAKEINTRESOURCE(IDR_MAIN_MENU));
     app->command_bar = CommandBar_Create(app->instance, app->window, 1);
     if (app->command_bar) {
         CommandBar_InsertMenubar(app->command_bar, app->instance, IDR_MAIN_MENU, 0);
-        CommandBar_AddAdornments(app->command_bar, 0, 0);
         CommandBar_DrawMenuBar(app->command_bar, 0);
         app->menu = CommandBar_GetMenu(app->command_bar, 0);
     }
@@ -1281,14 +1280,19 @@ static LRESULT CALLBACK App_WindowProc(HWND window, UINT message, WPARAM w_param
                     app->accelerator = NULL;
                 }
 
+                if (app->edit_font && app->edit_font != App_GetDefaultEditFont()) {
+                    DeleteObject(app->edit_font);
+                    app->edit_font = NULL;
+                }
+
                 if (app->command_bar) {
                     CommandBar_Destroy(app->command_bar);
                     app->command_bar = NULL;
                 }
 
-                if (app->edit_font && app->edit_font != App_GetDefaultEditFont()) {
-                    DeleteObject(app->edit_font);
-                    app->edit_font = NULL;
+                if (app->menu) {
+                    DestroyMenu(app->menu);
+                    app->menu = NULL;
                 }
             }
             PostQuitMessage(0);
@@ -1353,11 +1357,11 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE previous_instance, LPWSTR comma
     window = CreateWindow(
         APP_CLASS_NAME,
         APP_TITLE,
-        WS_VISIBLE | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN,
+        WS_OVERLAPPEDWINDOW | WS_VISIBLE | WS_CLIPCHILDREN,
         CW_USEDEFAULT,
         CW_USEDEFAULT,
-        480,
-        320,
+        620,
+        350,
         NULL,
         NULL,
         instance,

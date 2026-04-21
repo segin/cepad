@@ -29,6 +29,7 @@ typedef struct APP_STATE_TAG {
     HFONT edit_font;
     LOGFONT edit_logfont;
     int has_custom_font;
+    int owns_edit_font;
     DOCUMENT* docs;
     size_t doc_count;
     size_t doc_capacity;
@@ -53,8 +54,49 @@ static HFONT App_GetUiFont(void) {
     return (HFONT)GetStockObject(SYSTEM_FONT);
 }
 
-static HFONT App_GetDefaultEditFont(void) {
-    return (HFONT)GetStockObject(SYSTEM_FIXED_FONT);
+static int App_GetDpiY(void) {
+    HDC screen_dc;
+    int dpi_y;
+
+    screen_dc = GetDC(NULL);
+    dpi_y = screen_dc ? GetDeviceCaps(screen_dc, LOGPIXELSY) : 96;
+    if (screen_dc) {
+        ReleaseDC(NULL, screen_dc);
+    }
+
+    if (dpi_y <= 0) {
+        dpi_y = 96;
+    }
+
+    return dpi_y;
+}
+
+static int App_MulDivRound(int number, int numerator, int denominator) {
+    if (denominator == 0) {
+        return 0;
+    }
+
+    if (number >= 0) {
+        return (number * numerator + (denominator / 2)) / denominator;
+    }
+
+    return -(((-number) * numerator + (denominator / 2)) / denominator);
+}
+
+static HFONT App_CreateDefaultEditFont(LOGFONT* logfont_out) {
+    LOGFONT logfont;
+
+    memset(&logfont, 0, sizeof(logfont));
+    logfont.lfHeight = -App_MulDivRound(10, App_GetDpiY(), 72);
+    logfont.lfWeight = FW_NORMAL;
+    logfont.lfCharSet = DEFAULT_CHARSET;
+    lstrcpyn(logfont.lfFaceName, TEXT("Courier New"), LF_FACESIZE);
+
+    if (logfont_out) {
+        memcpy(logfont_out, &logfont, sizeof(logfont));
+    }
+
+    return CreateFontIndirect(&logfont);
 }
 
 static const WCHAR* App_GetBaseName(const WCHAR* path) {
@@ -137,7 +179,7 @@ static void App_UpdateAllTabText(APP_STATE* app) {
 static DWORD App_GetEditStyle(const APP_STATE* app) {
     DWORD style;
 
-    style = WS_CHILD | WS_VISIBLE | WS_BORDER | WS_VSCROLL | ES_LEFT | ES_MULTILINE | ES_AUTOVSCROLL | ES_NOHIDESEL;
+    style = WS_CHILD | WS_VISIBLE | WS_BORDER | WS_VSCROLL | ES_LEFT | ES_MULTILINE | ES_AUTOVSCROLL | ES_NOHIDESEL | ES_WANTRETURN;
     if (!app->word_wrap) {
         style |= WS_HSCROLL | ES_AUTOHSCROLL;
     }
@@ -885,12 +927,13 @@ static void App_SetEditFont(APP_STATE* app, HFONT font, const LOGFONT* logfont, 
         return;
     }
 
-    if (app->edit_font && app->edit_font != App_GetDefaultEditFont()) {
+    if (app->edit_font && app->owns_edit_font) {
         DeleteObject(app->edit_font);
     }
 
     app->edit_font = font;
     app->has_custom_font = is_custom;
+    app->owns_edit_font = 1;
     if (logfont) {
         memcpy(&app->edit_logfont, logfont, sizeof(app->edit_logfont));
     } else {
@@ -916,8 +959,7 @@ static void App_ChooseFont(APP_STATE* app) {
     if (app->has_custom_font) {
         memcpy(&logfont, &app->edit_logfont, sizeof(logfont));
     } else {
-        memset(&logfont, 0, sizeof(logfont));
-        GetObject(App_GetDefaultEditFont(), sizeof(logfont), &logfont);
+        memcpy(&logfont, &app->edit_logfont, sizeof(logfont));
     }
 
     memset(&choose_font, 0, sizeof(choose_font));
@@ -1124,9 +1166,15 @@ static LRESULT CALLBACK App_WindowProc(HWND window, UINT message, WPARAM w_param
             app = (APP_STATE*)create_info->lpCreateParams;
             app->window = window;
             SetWindowLongPtr(window, GWLP_USERDATA, (LONG_PTR)app);
-            default_font = App_GetDefaultEditFont();
+            default_font = App_CreateDefaultEditFont(&app->edit_logfont);
+            if (default_font) {
+                app->owns_edit_font = 1;
+            } else {
+                default_font = (HFONT)GetStockObject(SYSTEM_FIXED_FONT);
+                app->owns_edit_font = 0;
+                GetObject(default_font, sizeof(app->edit_logfont), &app->edit_logfont);
+            }
             app->edit_font = default_font;
-            GetObject(default_font, sizeof(app->edit_logfont), &app->edit_logfont);
 
             App_CreateControls(app);
             App_InsertDocument(app, TEXT(""), NULL);
@@ -1280,9 +1328,10 @@ static LRESULT CALLBACK App_WindowProc(HWND window, UINT message, WPARAM w_param
                     app->accelerator = NULL;
                 }
 
-                if (app->edit_font && app->edit_font != App_GetDefaultEditFont()) {
+                if (app->edit_font && app->owns_edit_font) {
                     DeleteObject(app->edit_font);
                     app->edit_font = NULL;
+                    app->owns_edit_font = 0;
                 }
 
                 if (app->command_bar) {
@@ -1331,6 +1380,7 @@ static int App_RegisterClass(HINSTANCE instance) {
 int WINAPI WinMain(HINSTANCE instance, HINSTANCE previous_instance, LPWSTR command_line, int show_command) {
     INITCOMMONCONTROLSEX controls;
     APP_STATE app;
+    HICON app_icon;
     HWND window;
     MSG message;
 
@@ -1371,6 +1421,12 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE previous_instance, LPWSTR comma
     if (!window) {
         MessageBox(NULL, TEXT("Main window creation failed."), APP_TITLE, MB_OK | MB_ICONERROR);
         return 1;
+    }
+
+    app_icon = LoadIcon(instance, MAKEINTRESOURCE(IDI_APP));
+    if (app_icon) {
+        SendMessage(window, WM_SETICON, ICON_BIG, (LPARAM)app_icon);
+        SendMessage(window, WM_SETICON, ICON_SMALL, (LPARAM)app_icon);
     }
 
     ShowWindow(window, show_command);

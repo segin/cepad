@@ -46,8 +46,111 @@ typedef struct APP_STATE_TAG {
     HWND find_down_radio;
 } APP_STATE;
 
+static WNDPROC g_edit_wndproc = NULL;
+static WNDPROC g_tab_wndproc = NULL;
+static WCHAR g_key_log_path[MAX_PATH];
+
 static APP_STATE* App_GetState(HWND window) {
     return (APP_STATE*)GetWindowLongPtr(window, GWLP_USERDATA);
+}
+
+static int App_IsLoggedKeyMessage(UINT message) {
+    switch (message) {
+        case WM_KEYDOWN:
+        case WM_KEYUP:
+        case WM_CHAR:
+        case WM_SYSKEYDOWN:
+        case WM_SYSKEYUP:
+        case WM_SYSCHAR:
+            return 1;
+    }
+
+    return 0;
+}
+
+static const WCHAR* App_GetKeyMessageName(UINT message) {
+    switch (message) {
+        case WM_KEYDOWN:
+            return TEXT("WM_KEYDOWN");
+        case WM_KEYUP:
+            return TEXT("WM_KEYUP");
+        case WM_CHAR:
+            return TEXT("WM_CHAR");
+        case WM_SYSKEYDOWN:
+            return TEXT("WM_SYSKEYDOWN");
+        case WM_SYSKEYUP:
+            return TEXT("WM_SYSKEYUP");
+        case WM_SYSCHAR:
+            return TEXT("WM_SYSCHAR");
+    }
+
+    return TEXT("WM_UNKNOWN");
+}
+
+static void App_InitializeKeyLog(void) {
+    HANDLE file;
+    const WCHAR bom = 0xFEFF;
+    DWORD written;
+    WCHAR* leaf;
+
+    if (!GetModuleFileName(NULL, g_key_log_path, MAX_PATH)) {
+        lstrcpy(g_key_log_path, TEXT("\\cepad-keylog.txt"));
+    } else {
+        leaf = g_key_log_path;
+        while (*leaf != 0) {
+            if (*leaf == TEXT('\\') || *leaf == TEXT('/')) {
+                ++leaf;
+            } else {
+                ++leaf;
+            }
+        }
+
+        while (leaf > g_key_log_path && leaf[-1] != TEXT('\\') && leaf[-1] != TEXT('/')) {
+            --leaf;
+        }
+
+        lstrcpy(leaf, TEXT("cepad-keylog.txt"));
+    }
+
+    file = CreateFile(g_key_log_path, GENERIC_WRITE, FILE_SHARE_READ, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (file == INVALID_HANDLE_VALUE) {
+        g_key_log_path[0] = 0;
+        return;
+    }
+
+    WriteFile(file, &bom, sizeof(bom), &written, NULL);
+    CloseHandle(file);
+}
+
+static void App_LogKeyMessage(const WCHAR* source, UINT message, WPARAM w_param, LPARAM l_param) {
+    HANDLE file;
+    WCHAR line[192];
+    DWORD written;
+    int length;
+
+    if (g_key_log_path[0] == 0) {
+        return;
+    }
+
+    wsprintf(
+        line,
+        TEXT("%s %s wParam=0x%04X lParam=0x%08lX char=U+%04X\r\n"),
+        source,
+        App_GetKeyMessageName(message),
+        (unsigned int)w_param,
+        (unsigned long)l_param,
+        (unsigned int)w_param
+    );
+
+    file = CreateFile(g_key_log_path, GENERIC_WRITE, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (file == INVALID_HANDLE_VALUE) {
+        return;
+    }
+
+    SetFilePointer(file, 0, NULL, FILE_END);
+    length = lstrlen(line);
+    WriteFile(file, line, (DWORD)(length * sizeof(WCHAR)), &written, NULL);
+    CloseHandle(file);
 }
 
 static HFONT App_GetUiFont(void) {
@@ -176,6 +279,44 @@ static void App_UpdateAllTabText(APP_STATE* app) {
     }
 }
 
+static HMENU App_GetTabsMenu(APP_STATE* app) {
+    if (!app || !app->menu) {
+        return NULL;
+    }
+
+    return GetSubMenu(app->menu, 3);
+}
+
+static void App_RebuildTabsMenu(APP_STATE* app) {
+    HMENU tabs_menu;
+    int index;
+
+    tabs_menu = App_GetTabsMenu(app);
+    if (!tabs_menu) {
+        return;
+    }
+
+    while (DeleteMenu(tabs_menu, 2, MF_BYPOSITION)) {
+    }
+
+    if (app->doc_count == 0) {
+        return;
+    }
+
+    AppendMenu(tabs_menu, MF_SEPARATOR, 0, NULL);
+    for (index = 0; (size_t)index < app->doc_count; ++index) {
+        WCHAR document_label[96];
+        WCHAR menu_label[128];
+
+        App_GetDocumentLabel(&app->docs[index], document_label, sizeof(document_label) / sizeof(document_label[0]));
+        wsprintf(menu_label, TEXT("%u %s"), index + 1, document_label);
+        AppendMenu(tabs_menu, MF_STRING, ID_TABS_DOCUMENT_FIRST + index, menu_label);
+        if (index == app->active_doc) {
+            CheckMenuItem(tabs_menu, ID_TABS_DOCUMENT_FIRST + index, MF_BYCOMMAND | MF_CHECKED);
+        }
+    }
+}
+
 static DWORD App_GetEditStyle(const APP_STATE* app) {
     DWORD style;
 
@@ -185,6 +326,37 @@ static DWORD App_GetEditStyle(const APP_STATE* app) {
     }
 
     return style;
+}
+
+static LRESULT CALLBACK App_EditProc(HWND window, UINT message, WPARAM w_param, LPARAM l_param) {
+    if (App_IsLoggedKeyMessage(message)) {
+        App_LogKeyMessage(TEXT("EDIT"), message, w_param, l_param);
+    }
+
+    if (message == WM_GETDLGCODE) {
+        return CallWindowProc(g_edit_wndproc, window, message, w_param, l_param) | DLGC_WANTALLKEYS | DLGC_WANTCHARS;
+    }
+
+    if (message == WM_CHAR && w_param == TEXT('\r')) {
+        SendMessage(window, EM_REPLACESEL, TRUE, (LPARAM)TEXT("\r\n"));
+        return 0;
+    }
+
+    return CallWindowProc(g_edit_wndproc, window, message, w_param, l_param);
+}
+
+static LRESULT CALLBACK App_TabProc(HWND window, UINT message, WPARAM w_param, LPARAM l_param) {
+    if (message == WM_COMMAND) {
+        HWND parent_window;
+
+        parent_window = GetParent(window);
+        if (parent_window) {
+            SendMessage(parent_window, WM_COMMAND, w_param, l_param);
+            return 0;
+        }
+    }
+
+    return CallWindowProc(g_tab_wndproc, window, message, w_param, l_param);
 }
 
 static HWND App_CreateEditControl(APP_STATE* app, LPCTSTR text) {
@@ -209,6 +381,10 @@ static HWND App_CreateEditControl(APP_STATE* app, LPCTSTR text) {
         return NULL;
     }
 
+    if (!g_edit_wndproc) {
+        g_edit_wndproc = (WNDPROC)GetWindowLongPtr(edit, GWLP_WNDPROC);
+    }
+    SetWindowLongPtr(edit, GWLP_WNDPROC, (LONG_PTR)App_EditProc);
     SendMessage(edit, WM_SETFONT, (WPARAM)app->edit_font, MAKELPARAM(TRUE, 0));
     SendMessage(edit, EM_LIMITTEXT, 0, 0);
     return edit;
@@ -311,6 +487,41 @@ static HWND App_GetActiveEdit(APP_STATE* app) {
     }
 
     return app->docs[app->active_doc].edit;
+}
+
+static int App_IsEditorKeyTarget(APP_STATE* app, HWND target) {
+    HWND active_edit;
+
+    if (!app || !target) {
+        return 0;
+    }
+
+    if (app->find_window && (target == app->find_window || IsChild(app->find_window, target))) {
+        return 0;
+    }
+
+    if (app->command_bar && (target == app->command_bar || IsChild(app->command_bar, target))) {
+        return 0;
+    }
+
+    active_edit = App_GetActiveEdit(app);
+    if (!active_edit) {
+        return 0;
+    }
+
+    if (target == active_edit || IsChild(active_edit, target)) {
+        return 1;
+    }
+
+    if (target == app->tab || IsChild(app->tab, target)) {
+        return 1;
+    }
+
+    if (target == app->window) {
+        return 1;
+    }
+
+    return 0;
 }
 
 static void App_SelectDocument(APP_STATE* app, int index) {
@@ -636,6 +847,14 @@ static int App_PromptSaveIfNeeded(APP_STATE* app, int index) {
     return 1;
 }
 
+static int App_PromptActiveDocumentIfNeeded(APP_STATE* app) {
+    if (!app || app->active_doc < 0 || (size_t)app->active_doc >= app->doc_count) {
+        return 1;
+    }
+
+    return App_PromptSaveIfNeeded(app, app->active_doc);
+}
+
 static void App_ResetDocumentToBlank(APP_STATE* app, int index) {
     if (!app || index < 0 || (size_t)index >= app->doc_count) {
         return;
@@ -727,6 +946,8 @@ static void App_UpdateMenuState(APP_STATE* app) {
         ID_EDIT_PASTE,
         MF_BYCOMMAND | (edit && (IsClipboardFormatAvailable(CF_UNICODETEXT) || IsClipboardFormatAvailable(CF_TEXT)) ? MF_ENABLED : MF_GRAYED)
     );
+    EnableMenuItem(app->menu, ID_TABS_NEXT, MF_BYCOMMAND | (app->doc_count > 1 ? MF_ENABLED : MF_GRAYED));
+    EnableMenuItem(app->menu, ID_TABS_PREVIOUS, MF_BYCOMMAND | (app->doc_count > 1 ? MF_ENABLED : MF_GRAYED));
     EnableMenuItem(app->menu, ID_SEARCH_FIND_NEXT, MF_BYCOMMAND | (app->find_buffer[0] != 0 ? MF_ENABLED : MF_GRAYED));
 }
 
@@ -994,6 +1215,7 @@ static HACCEL App_CreateAccelerators(void) {
         { FVIRTKEY | FCONTROL, 'V', ID_EDIT_PASTE },
         { FVIRTKEY | FCONTROL, 'A', ID_EDIT_SELECT_ALL },
         { FVIRTKEY | FCONTROL, 'F', ID_SEARCH_FIND },
+        { FVIRTKEY | FALT, VK_F4, ID_FILE_EXIT },
         { FVIRTKEY, VK_DELETE, ID_EDIT_DELETE },
         { FVIRTKEY, VK_F3, ID_SEARCH_FIND_NEXT },
         { FVIRTKEY, VK_F5, ID_EDIT_TIME_DATE },
@@ -1027,6 +1249,10 @@ static void App_CreateControls(APP_STATE* app) {
         NULL
     );
 
+    if (!g_tab_wndproc) {
+        g_tab_wndproc = (WNDPROC)GetWindowLongPtr(app->tab, GWLP_WNDPROC);
+    }
+    SetWindowLongPtr(app->tab, GWLP_WNDPROC, (LONG_PTR)App_TabProc);
     SendMessage(app->tab, WM_SETFONT, (WPARAM)app->ui_font, MAKELPARAM(TRUE, 0));
 }
 
@@ -1034,7 +1260,8 @@ static void App_HandleOpen(APP_STATE* app) {
     WCHAR path[MAX_PATH];
 
     path[0] = 0;
-    if (App_BrowseForPath(app->window, path, OFN_FILEMUSTEXIST | OFN_HIDEREADONLY, TEXT("Open Text File"))) {
+    if (App_BrowseForPath(app->window, path, OFN_FILEMUSTEXIST | OFN_HIDEREADONLY, TEXT("Open Text File")) &&
+        App_PromptActiveDocumentIfNeeded(app)) {
         App_OpenDocumentFromPath(app, path);
     }
 }
@@ -1156,6 +1383,10 @@ static LRESULT CALLBACK App_WindowProc(HWND window, UINT message, WPARAM w_param
 
     app = App_GetState(window);
 
+    if (App_IsLoggedKeyMessage(message)) {
+        App_LogKeyMessage(TEXT("MAIN"), message, w_param, l_param);
+    }
+
     switch (message) {
         case WM_CREATE:
         {
@@ -1197,6 +1428,9 @@ static LRESULT CALLBACK App_WindowProc(HWND window, UINT message, WPARAM w_param
 
         case WM_INITMENUPOPUP:
             if (app) {
+                if ((HMENU)w_param == App_GetTabsMenu(app)) {
+                    App_RebuildTabsMenu(app);
+                }
                 App_UpdateMenuState(app);
             }
             return 0;
@@ -1211,7 +1445,7 @@ static LRESULT CALLBACK App_WindowProc(HWND window, UINT message, WPARAM w_param
 
                 for (index = 0; (size_t)index < app->doc_count; ++index) {
                     if ((HWND)l_param == app->docs[index].edit) {
-                        App_SetDocumentDirty(app, index, 1);
+                        App_SetDocumentDirty(app, index, SendMessage(app->docs[index].edit, EM_GETMODIFY, 0, 0) ? 1 : 0);
                         break;
                     }
                 }
@@ -1220,7 +1454,9 @@ static LRESULT CALLBACK App_WindowProc(HWND window, UINT message, WPARAM w_param
 
             switch (LOWORD(w_param)) {
                 case ID_FILE_NEW:
-                    App_InsertDocument(app, TEXT(""), NULL);
+                    if (App_PromptActiveDocumentIfNeeded(app)) {
+                        App_InsertDocument(app, TEXT(""), NULL);
+                    }
                     return 0;
 
                 case ID_FILE_OPEN:
@@ -1286,6 +1522,11 @@ static LRESULT CALLBACK App_WindowProc(HWND window, UINT message, WPARAM w_param
                 case ID_HELP_ABOUT:
                     App_ShowAbout(app);
                     return 0;
+            }
+
+            if (LOWORD(w_param) >= ID_TABS_DOCUMENT_FIRST && (size_t)(LOWORD(w_param) - ID_TABS_DOCUMENT_FIRST) < app->doc_count) {
+                App_SelectDocument(app, LOWORD(w_param) - ID_TABS_DOCUMENT_FIRST);
+                return 0;
             }
             return 0;
 
@@ -1403,6 +1644,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE previous_instance, LPWSTR comma
     app.word_wrap = 1;
     app.next_untitled_id = 1;
     app.accelerator = App_CreateAccelerators();
+    App_InitializeKeyLog();
 
     window = CreateWindow(
         APP_CLASS_NAME,
@@ -1433,6 +1675,25 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE previous_instance, LPWSTR comma
     UpdateWindow(window);
 
     while (GetMessage(&message, NULL, 0, 0)) {
+        HWND focused_window;
+        HWND active_edit;
+
+        if (App_IsLoggedKeyMessage(message.message)) {
+            App_LogKeyMessage(TEXT("LOOP"), message.message, message.wParam, message.lParam);
+        }
+
+        focused_window = GetFocus();
+        active_edit = App_GetActiveEdit(&app);
+        if (
+            message.message == WM_KEYDOWN &&
+            message.wParam == VK_RETURN &&
+            active_edit &&
+            (App_IsEditorKeyTarget(&app, message.hwnd) || App_IsEditorKeyTarget(&app, focused_window))
+        ) {
+            SendMessage(active_edit, EM_REPLACESEL, TRUE, (LPARAM)TEXT("\r\n"));
+            continue;
+        }
+
         if (!app.accelerator || !TranslateAccelerator(window, app.accelerator, &message)) {
             TranslateMessage(&message);
             DispatchMessage(&message);

@@ -1,6 +1,7 @@
 #include <windows.h>
 #include <commctrl.h>
 #include <commdlg.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include "resource.h"
@@ -676,7 +677,11 @@ static int App_SaveFileText(const WCHAR* path, const WCHAR* text) {
         return 0;
     }
 
-    WideCharToMultiByte(CP_UTF8, 0, text, -1, bytes, byte_count, NULL, NULL);
+    if (WideCharToMultiByte(CP_UTF8, 0, text, -1, bytes, byte_count, NULL, NULL) <= 0) {
+        free(bytes);
+        CloseHandle(file);
+        return 0;
+    }
     if (!WriteFile(file, bytes, (DWORD)(byte_count - 1), &written, NULL) || written != (DWORD)(byte_count - 1)) {
         free(bytes);
         CloseHandle(file);
@@ -926,6 +931,7 @@ static void App_RecreateEditors(APP_STATE* app) {
         end = 0;
         SendMessage(app->docs[index].edit, EM_GETSEL, (WPARAM)&start, (LPARAM)&end);
         DestroyWindow(app->docs[index].edit);
+        app->docs[index].edit = NULL;
 
         edit = App_CreateEditControl(app, text);
         free(text);
@@ -1201,6 +1207,10 @@ static void App_CreateControls(APP_STATE* app) {
         app->instance,
         NULL
     );
+
+    if (!app->tab) {
+        return;
+    }
 
     if (!g_tab_wndproc) {
         g_tab_wndproc = (WNDPROC)GetWindowLongPtr(app->tab, GWLP_WNDPROC);
@@ -1622,7 +1632,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE previous_instance, LPWSTR comma
     ShowWindow(window, show_command);
     UpdateWindow(window);
 
-    while (GetMessage(&message, NULL, 0, 0)) {
+    while (GetMessage(&message, NULL, 0, 0) > 0) {
         HWND focused_window;
         HWND active_edit;
 

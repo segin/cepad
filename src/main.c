@@ -10,6 +10,7 @@
 #define APP_TITLE TEXT("CE Pad")
 #define IDC_TAB 1001
 #define FIND_BUFFER_LENGTH 128
+#define APP_MAX_FILE_SIZE (16 * 1024 * 1024)
 
 typedef struct DOCUMENT_TAG {
     HWND edit;
@@ -229,6 +230,7 @@ static void App_RebuildTabsMenu(APP_STATE* app) {
         return;
     }
 
+    /* DeleteMenu returns nonzero while items remain; loop clears all dynamic tab entries. */
     while (DeleteMenu(tabs_menu, 2, MF_BYPOSITION)) {
     }
 
@@ -539,7 +541,7 @@ static int App_LoadFileText(const WCHAR* path, WCHAR** text_out) {
     }
 
     size = GetFileSize(file, NULL);
-    if (size == INVALID_FILE_SIZE) {
+    if (size == INVALID_FILE_SIZE || size > APP_MAX_FILE_SIZE) {
         CloseHandle(file);
         return 0;
     }
@@ -603,21 +605,37 @@ static int App_LoadFileText(const WCHAR* path, WCHAR** text_out) {
             return 0;
         }
 
+        if ((size_t)char_count > (SIZE_MAX / sizeof(WCHAR)) - 1) {
+            free(bytes);
+            return 0;
+        }
         text = (WCHAR*)malloc(((size_t)char_count + 1) * sizeof(WCHAR));
         if (!text) {
             free(bytes);
             return 0;
         }
 
-        MultiByteToWideChar(CP_ACP, 0, (LPCSTR)data, (int)read_size, text, char_count);
+        if (MultiByteToWideChar(CP_ACP, 0, (LPCSTR)data, (int)read_size, text, char_count) <= 0) {
+            free(text);
+            free(bytes);
+            return 0;
+        }
     } else {
+        if ((size_t)char_count > (SIZE_MAX / sizeof(WCHAR)) - 1) {
+            free(bytes);
+            return 0;
+        }
         text = (WCHAR*)malloc(((size_t)char_count + 1) * sizeof(WCHAR));
         if (!text) {
             free(bytes);
             return 0;
         }
 
-        MultiByteToWideChar(CP_UTF8, 0, (LPCSTR)data, (int)read_size, text, char_count);
+        if (MultiByteToWideChar(CP_UTF8, 0, (LPCSTR)data, (int)read_size, text, char_count) <= 0) {
+            free(text);
+            free(bytes);
+            return 0;
+        }
     }
 
     text[char_count] = 0;
@@ -685,10 +703,19 @@ static int App_BrowseForPath(HWND owner, WCHAR* path, DWORD flags, LPCTSTR title
     info.lpstrDefExt = TEXT("txt");
 
     if (flags & OFN_OVERWRITEPROMPT) {
-        return GetSaveFileName(&info);
+        if (GetSaveFileName(&info)) {
+            return 1;
+        }
+    } else {
+        if (GetOpenFileName(&info)) {
+            return 1;
+        }
     }
 
-    return GetOpenFileName(&info);
+    if (CommDlgExtendedError() != 0) {
+        MessageBox(owner, TEXT("The file dialog encountered an error."), APP_TITLE, MB_OK | MB_ICONERROR);
+    }
+    return 0;
 }
 
 static int App_OpenDocumentFromPath(APP_STATE* app, const WCHAR* path) {
@@ -796,6 +823,10 @@ static void App_ResetDocumentToBlank(APP_STATE* app, int index) {
 
 static int App_CloseDocument(APP_STATE* app, int index) {
     size_t move_count;
+
+    if (!app || index < 0 || (size_t)index >= app->doc_count) {
+        return 0;
+    }
 
     if (!App_PromptSaveIfNeeded(app, index)) {
         return 0;
@@ -1103,11 +1134,7 @@ static void App_ChooseFont(APP_STATE* app) {
         return;
     }
 
-    if (app->has_custom_font) {
-        memcpy(&logfont, &app->edit_logfont, sizeof(logfont));
-    } else {
-        memcpy(&logfont, &app->edit_logfont, sizeof(logfont));
-    }
+    memcpy(&logfont, &app->edit_logfont, sizeof(logfont));
 
     memset(&choose_font, 0, sizeof(choose_font));
     choose_font.lStructSize = sizeof(choose_font);
@@ -1458,7 +1485,7 @@ static LRESULT CALLBACK App_WindowProc(HWND window, UINT message, WPARAM w_param
                     int selection;
 
                     selection = TabCtrl_GetCurSel(app->tab);
-                    if (selection >= 0) {
+                    if (selection >= 0 && (size_t)selection < app->doc_count) {
                         App_SelectDocument(app, selection);
                     }
                 }
